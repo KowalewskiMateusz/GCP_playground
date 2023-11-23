@@ -1,0 +1,4 @@
+#CI/CD requirements are listed here
+
+kfp==1.8.4
+google-cloud-aiplatform==1.14.0

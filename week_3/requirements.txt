@@ -1,0 +1,4 @@
+kfp~=1.8.14
+typing~=3.10.0.0
+google-cloud-aiplatform~=1.11.0
+google-auth~=2.15.0

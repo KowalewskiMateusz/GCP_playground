@@ -1,0 +1,114 @@
+variables:
+  - name: MODEL_NAME
+    value: "<model-name>" # This is the name of the model you want to deploy
+  - name: GCP_PROJECT
+    value: "<gcp-project>"
+  - name: GCP_REGION
+    value: "<gcp-region>"
+  - name: GCP_ARTIFACT_REGISTRY
+    value: "<gcp-artifact-registry>"
+  - name: GCP_ARTIFACT_REGISTRY_REPOSITORY
+    value: "<gcp-artifact-registry-repository>"
+  - name: PIPELINE_ROOT_BUCKET
+    value: "$(GCP_PROJECT)-vertex-ai"
+  - name: PIPELINE_STORAGE_BUCKET
+    value: "$(GCP_PROJECT)-vertex-ai-pipelines-storage"
+  - name: CPU
+    value: "8" # CPU Limit for training - https://cloud.google.com/vertex-ai/docs/pipelines/machine-types
+  - name: "MEMORY"
+    value: "32G" # MEMORY Limit for training - https://cloud.google.com/vertex-ai/docs/pipelines/machine-types
+  - name: MODEL_ENDPOINT
+    value: "$(MODEL_NAME)-endpoint" # Vertex AI Endpoint for model serving 
+  - name: MODEL_ENDPOINT_MACHINE_TYPE
+    value: "<machine-type>" # compute resources machine type for serving predictions - https://cloud.google.com/vertex-ai/docs/predictions/configure-compute#n1-series
+  - name: BASE_IMAGE_DOCKERFILEPATH
+    value: "$(Build.SourcesDirectory)/week_4_6/model/Dockerfile"
+  - name: SERVING_IMAGE_DOCKERFILEPATH
+    value: "$(Build.SourcesDirectory)/week_4_6/model/serving_container/Dockerfile"
+  - name: PIPELINE_PACKAGE_NAME
+    value: "$(MODEL_NAME)-pipeline-$(Build.BuildId).json"
+  - name: PIPELINE_BASE_IMAGE
+    value: "$(GCP_ARTIFACT_REGISTRY)/$(GCP_PROJECT)/$(GCP_ARTIFACT_REGISTRY_REPOSITORY)/$(MODEL_NAME)-base-image"
+  - name: PIPELINE_SERVING_IMAGE
+    value: "$(GCP_ARTIFACT_REGISTRY)/$(GCP_PROJECT)/$(GCP_ARTIFACT_REGISTRY_REPOSITORY)/$(MODEL_NAME)-serving-image"
+  - name: GCP_SERVICE_ACCOUNT
+    value: "<gcp-service-account-name>"
+  - name: GCP_SERVICE_ACCOUNT_KEY
+    value: "<gcp-service-account-json-key-stored-in-azure-devops-secure-files>"
+trigger:
+  branches:
+    include:
+      - "*"
+  paths:
+    include:
+      - week_4_6/model/*
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  - stage: build
+    displayName: "Build Docker images stage"
+    jobs:
+      - job: registry_login
+        displayName: "Build and Push Docker images to Artifact Registry Repository"
+        steps:
+          - task: DownloadSecureFile@1
+            name: authkey
+            displayName: "Download Service Account Key"
+            inputs:
+              secureFile: "$(GCP_SERVICE_ACCOUNT_KEY)"
+              retryCount: "2"
+
+          - script: |
+              gcloud auth activate-service-account --key-file $(authkey.secureFilePath)
+              gcloud config set project $(GCP_PROJECT)
+            displayName: "Google Authentificate"
+
+          - script: |
+              cat $(authkey.secureFilePath) | docker login -u _json_key --password-stdin https://$(GCP_ARTIFACT_REGISTRY)
+            displayName: 'Artifact Registry Login'
+
+          - script: |
+              cd $(Build.SourcesDirectory)/week_4_6/model/
+              bash build.sh --push
+            displayName: "Base image build"
+          
+          - script: |
+              cd $(Build.SourcesDirectory)/week_4_6/model/serving_container/
+              bash build.sh --push
+            displayName: "Serving image build"
+  
+  - stage: vertexai
+    displayName: "Vertex AI stage"
+    dependsOn: build
+    jobs:
+      - job: compile
+        displayName: "Compile and run Vertex AI pipeline"
+        steps:
+          - task: DownloadSecureFile@1
+            name: authkey
+            displayName: "Download Service Account Key"
+            inputs:
+              secureFile: "$(GCP_SERVICE_ACCOUNT_KEY)"
+              retryCount: "2"
+          
+          - script: |
+              gcloud auth activate-service-account --key-file $(authkey.secureFilePath)
+              gcloud config set project $(GCP_PROJECT)
+              python3 --version 
+              sudo apt-get -y install python3-pip gettext-base
+              cd $(Build.SourcesDirectory)/week_4_6/model/
+              python3 -m pip install -r requirements.txt
+              export PYTHONPATH=`pwd`:$PYTHONPATH
+              cd $(Build.SourcesDirectory)/week_4_6/model/pipeline/
+              envsubst '${PIPELINE_ROOT_BUCKET} ${MODEL_NAME} ${MODEL_ENDPOINT_MACHINE_TYPE} ${PIPELINE_BASE_IMAGE} ${GCP_PROJECT} ${GCP_REGION} ${GCP_SERVICE_ACCOUNT}' < pipeline_config.tmpl > pipeline_config.yaml
+              python3 compile.py --package_path=$(PIPELINE_PACKAGE_NAME) --credentials_path=$(authkey.secureFilePath) --deploy
+            displayName: "compile $(PIPELINE_PACKAGE_NAME) pipeline"
+
+          - script: |
+              gsutil cp $(Build.SourcesDirectory)/week_4_6/model/pipeline/$(PIPELINE_PACKAGE_NAME) gs://$(PIPELINE_STORAGE_BUCKET)
+            displayName: "copy $(PIPELINE_PACKAGE_NAME) pipeline to $(PIPELINE_STORAGE_BUCKET)"
+
+              
+              

@@ -1,0 +1,5 @@
+google-cloud-aiplatform~=1.18.1
+google-auth~=2.15.0
+kfp~=1.8.14
+google_cloud_pipeline_components~=1.0.25
+pyyaml~=5.4.1
